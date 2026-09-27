@@ -1,21 +1,34 @@
 import "server-only";
 import type { Lead } from "@/lib/types";
 
-type PlacesResponse = {
-  places?: {
-    id: string;
-    displayName?: { text: string };
-    primaryTypeDisplayName?: { text: string };
-    formattedAddress?: string;
-    nationalPhoneNumber?: string;
-    internationalPhoneNumber?: string;
-    websiteUri?: string;
-    rating?: number;
-    userRatingCount?: number;
-    googleMapsUri?: string;
-  }[];
-  nextPageToken?: string;
+type PlaceResult = {
+  id: string;
+  displayName?: { text: string };
+  primaryTypeDisplayName?: { text: string };
+  formattedAddress?: string;
+  nationalPhoneNumber?: string;
+  internationalPhoneNumber?: string;
+  websiteUri?: string;
+  rating?: number;
+  userRatingCount?: number;
+  googleMapsUri?: string;
 };
+
+type PlacesResponse = { places?: PlaceResult[]; nextPageToken?: string };
+
+function toLead(p: PlaceResult): Lead {
+  return {
+    placeId: p.id,
+    name: p.displayName?.text ?? "Unnamed business",
+    category: p.primaryTypeDisplayName?.text ?? null,
+    address: p.formattedAddress ?? null,
+    phone: p.internationalPhoneNumber ?? p.nationalPhoneNumber ?? null,
+    website: p.websiteUri ?? null,
+    rating: p.rating ?? null,
+    reviewCount: p.userRatingCount ?? 0,
+    mapsUrl: p.googleMapsUri ?? null,
+  };
+}
 
 const ENDPOINT = "https://places.googleapis.com/v1/places:searchText";
 const PAGE_SIZE = 20;
@@ -58,7 +71,7 @@ export async function searchPlaces(textQuery: string, limit: number): Promise<Le
       },
       body: JSON.stringify({
         textQuery,
-        pageSize: Math.min(PAGE_SIZE, target - leads.length),
+        pageSize: PAGE_SIZE, // must stay the same across pages of one search
         pageToken,
         regionCode: "PK",
         languageCode: "en",
@@ -72,23 +85,52 @@ export async function searchPlaces(textQuery: string, limit: number): Promise<Le
     }
 
     const data = (await res.json()) as PlacesResponse;
-    for (const p of data.places ?? []) {
-      leads.push({
-        placeId: p.id,
-        name: p.displayName?.text ?? "Unnamed business",
-        category: p.primaryTypeDisplayName?.text ?? null,
-        address: p.formattedAddress ?? null,
-        phone: p.internationalPhoneNumber ?? p.nationalPhoneNumber ?? null,
-        website: p.websiteUri ?? null,
-        rating: p.rating ?? null,
-        reviewCount: p.userRatingCount ?? 0,
-        mapsUrl: p.googleMapsUri ?? null,
-      });
-    }
+    leads.push(...(data.places ?? []).map(toLead));
 
     pageToken = data.nextPageToken;
     if (!pageToken) break;
   }
 
   return leads.slice(0, target);
+}
+
+const DETAILS_FIELD_MASK = FIELD_MASK.split(",")
+  .filter((f) => f.startsWith("places."))
+  .map((f) => f.slice("places.".length))
+  .join(",");
+
+/** Fetch one place's current details by id (Place Details, New). Returns null if it's gone. */
+export async function getPlaceDetails(placeId: string): Promise<Lead | null> {
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  if (!apiKey) throw new PlacesError("GOOGLE_PLACES_API_KEY is not set");
+
+  const res = await fetch(
+    `https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}?languageCode=en&regionCode=PK`,
+    {
+      headers: { "X-Goog-Api-Key": apiKey, "X-Goog-FieldMask": DETAILS_FIELD_MASK },
+      cache: "no-store",
+    },
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new PlacesError(`Place Details ${res.status}`);
+  return toLead((await res.json()) as PlaceResult);
+}
+
+/** Fetch details for many places with limited concurrency. Missing places are skipped. */
+export async function getManyPlaceDetails(placeIds: string[], concurrency = 8): Promise<Map<string, Lead>> {
+  const out = new Map<string, Lead>();
+  let next = 0;
+  async function worker() {
+    while (next < placeIds.length) {
+      const id = placeIds[next++];
+      try {
+        const lead = await getPlaceDetails(id);
+        if (lead) out.set(id, lead);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, placeIds.length) }, worker));
+  return out;
 }

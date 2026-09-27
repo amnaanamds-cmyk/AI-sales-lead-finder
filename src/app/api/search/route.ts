@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { MAX_RESULTS, PlacesError, searchPlaces } from "@/lib/places";
+import { getWorkspace, totalCredits } from "@/lib/workspace";
+import type { SavedLead } from "@/lib/types";
 
 type Body = { category?: unknown; area?: unknown; city?: unknown };
 
@@ -28,19 +30,14 @@ export async function POST(request: Request) {
     );
   }
 
-  const { data: workspace, error: wsError } = await supabase
-    .from("workspaces")
-    .select("id, credits_left")
-    .eq("owner_id", user.id)
-    .order("created_at")
-    .limit(1)
-    .single();
-  if (wsError || !workspace) {
+  const workspace = await getWorkspace(supabase, user.id);
+  if (!workspace) {
     return NextResponse.json({ error: "Workspace not found." }, { status: 404 });
   }
-  if (workspace.credits_left <= 0) {
+  const available = totalCredits(workspace);
+  if (available <= 0) {
     return NextResponse.json(
-      { error: "You're out of lead credits for this month." },
+      { error: "You're out of lead credits. Buy a pack or upgrade on the Billing page." },
       { status: 402 },
     );
   }
@@ -48,9 +45,10 @@ export async function POST(request: Request) {
   const location = [area, city].filter(Boolean).join(", ");
   const query = `${category} in ${location}, Pakistan`;
 
-  let leads;
+  let found;
   try {
-    leads = await searchPlaces(query, Math.min(workspace.credits_left, MAX_RESULTS));
+    // Fetch a full page even on low credits: leads already in the workspace are free.
+    found = await searchPlaces(query, Math.min(Math.max(available, 20), MAX_RESULTS));
   } catch (err) {
     console.error(err);
     const message =
@@ -60,16 +58,29 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: message }, { status: 502 });
   }
 
-  // Charge one credit per lead returned. The RPC clamps to what's left.
-  const { data: granted, error: creditError } = await supabase.rpc(
-    "consume_credits",
-    { ws: workspace.id, requested: leads.length },
-  );
-  if (creditError) {
-    console.error(creditError);
-    return NextResponse.json({ error: "Could not update credits." }, { status: 500 });
+  // Only businesses new to this workspace cost a credit.
+  const { data: existing } = await supabase
+    .from("leads")
+    .select("id, place_id")
+    .eq("workspace_id", workspace.id)
+    .in("place_id", found.length ? found.map((l) => l.placeId) : [""]);
+  const known = new Map((existing ?? []).map((r) => [r.place_id as string, r.id as string]));
+  const fresh = found.filter((l) => !known.has(l.placeId));
+
+  let granted = 0;
+  if (fresh.length > 0) {
+    const { data, error } = await supabase.rpc("consume_credits", {
+      ws: workspace.id,
+      requested: fresh.length,
+    });
+    if (error) {
+      console.error(error);
+      return NextResponse.json({ error: "Could not update credits." }, { status: 500 });
+    }
+    granted = data as number;
   }
-  leads = leads.slice(0, granted as number);
+  const paidFresh = new Set(fresh.slice(0, granted).map((l) => l.placeId));
+  const leads = found.filter((l) => known.has(l.placeId) || paidFresh.has(l.placeId));
 
   const { data: search } = await supabase
     .from("searches")
@@ -83,20 +94,31 @@ export async function POST(request: Request) {
     .single();
 
   // Store only place_id (Google Places terms); details are fetched live.
-  if (leads.length > 0) {
-    await supabase.from("leads").upsert(
-      leads.map((l) => ({
-        workspace_id: workspace.id,
-        search_id: search?.id ?? null,
-        place_id: l.placeId,
-      })),
-      { onConflict: "workspace_id,place_id", ignoreDuplicates: true },
-    );
+  if (paidFresh.size > 0) {
+    const { data: inserted, error } = await supabase
+      .from("leads")
+      .insert(
+        [...paidFresh].map((placeId) => ({
+          workspace_id: workspace.id,
+          search_id: search?.id ?? null,
+          place_id: placeId,
+        })),
+      )
+      .select("id, place_id");
+    if (error) console.error(error);
+    for (const r of inserted ?? []) known.set(r.place_id, r.id);
   }
+
+  const saved: SavedLead[] = leads.flatMap((l) => {
+    const leadId = known.get(l.placeId);
+    return leadId ? [{ ...l, leadId }] : [];
+  });
 
   return NextResponse.json({
     query,
-    leads,
-    creditsLeft: workspace.credits_left - (granted as number),
+    leads: saved,
+    newLeads: paidFresh.size,
+    skipped: fresh.length - paidFresh.size,
+    creditsLeft: available - granted,
   });
 }
