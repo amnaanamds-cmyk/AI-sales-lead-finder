@@ -118,7 +118,7 @@ An AI tool for Pakistani freelancers and small agencies. You type a business typ
 | 1 | Auth, search via Places API, lead list, CSV export |
 | 2 | Website checker + AI scoring |
 | 3 | Pitch writer (3 languages) + WhatsApp button |
-| 4 | Pipeline board + credits system | ✅ |
+| 4 | Pipeline board + credits system |
 | 5 | Payments (JazzCash/Easypaisa) + landing page |
 | 6 | Beta with 30 users, fix issues |
 | 7–8 | Public launch + Product Hunt |
