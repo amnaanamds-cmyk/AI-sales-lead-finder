@@ -1,12 +1,14 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { AppHeader } from "@/components/AppHeader";
+import { dataAttribution } from "@/lib/config";
 import { getManyPlaceDetails } from "@/lib/places";
 import { canUse } from "@/lib/plans";
 import { createClient } from "@/lib/supabase/server";
 import { getWorkspace } from "@/lib/workspace";
 import type { LeadInsight, PipelineStage, PitchLanguage } from "@/lib/types";
-import { Board, type Card } from "./Board";
+import type { Card } from "./Board";
+import { BoardClient } from "./BoardClient";
 
 /** Details are fetched live from Google for every card, so keep the board bounded. */
 const MAX_CARDS = 150;
@@ -30,7 +32,7 @@ export default async function PipelinePage() {
   if (workspace && canUse(plan, "pipeline")) {
     const { data: rows } = await supabase
       .from("pipeline")
-      .select("lead_id, stage, notes, next_followup, updated_at, leads!inner(place_id, workspace_id)")
+      .select("lead_id, stage, notes, next_followup, deal_value, updated_at, leads!inner(place_id, workspace_id)")
       .eq("leads.workspace_id", workspace.id)
       .order("updated_at", { ascending: false })
       .limit(MAX_CARDS + 1);
@@ -39,11 +41,14 @@ export default async function PipelinePage() {
 
     const leadIds = list.map((r) => r.lead_id as string);
     const placeIds = list.map((r) => (r.leads as unknown as { place_id: string }).place_id);
-    const [details, { data: scores }, { data: checks }] = await Promise.all([
+    const [details, { data: scores }, { data: checks }, { data: reports }] = await Promise.all([
       getManyPlaceDetails(placeIds).catch(() => new Map()),
       supabase.from("lead_scores").select("lead_id, score, reason, main_gap").in("lead_id", leadIds.length ? leadIds : [""]),
       supabase.from("lead_checks").select("*").in("lead_id", leadIds.length ? leadIds : [""]),
+      supabase.from("reports").select("lead_id, view_count").in("lead_id", leadIds.length ? leadIds : [""]),
     ]);
+    const views = new Map<string, number>();
+    for (const r of reports ?? []) views.set(r.lead_id, (views.get(r.lead_id) ?? 0) + r.view_count);
 
     cards = list.map((r, i) => {
       const s = scores?.find((x) => x.lead_id === r.lead_id);
@@ -60,6 +65,8 @@ export default async function PipelinePage() {
         stage: r.stage as PipelineStage,
         notes: (r.notes as string | null) ?? "",
         nextFollowup: (r.next_followup as string | null) ?? null,
+        dealValue: (r.deal_value as number | null) ?? null,
+        reportViews: views.get(r.lead_id as string) ?? 0,
         lead: lead ? { ...lead, leadId: r.lead_id as string } : null,
         insight,
       };
@@ -82,7 +89,13 @@ export default async function PipelinePage() {
         ) : (
           <>
             {truncated && <p className="mt-2 text-sm text-zinc-500">Showing your {MAX_CARDS} most recently updated leads.</p>}
-            <Board initialCards={cards} plan={plan} languagePref={(profile.language_pref as PitchLanguage) ?? "en"} />
+            <BoardClient
+              initialCards={cards}
+              plan={plan}
+              languagePref={(profile.language_pref as PitchLanguage) ?? "en"}
+              serviceId={profile.service_type}
+              attribution={dataAttribution()}
+            />
           </>
         )}
       </main>

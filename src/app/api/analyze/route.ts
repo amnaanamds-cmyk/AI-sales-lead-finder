@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
+import { DEMO_BUSINESSES } from "@/app/demo/data";
+import { sampleDataMode } from "@/lib/config";
 import { checkSite } from "@/lib/sitecheck";
-import { AiError, SCORE_BATCH_SIZE, scoreLeads } from "@/lib/ai";
+import { aiConfigured, SCORE_BATCH_SIZE, scoreLeads } from "@/lib/ai";
+import { ruleScore } from "@/lib/rules";
 import type { LeadInsight, LeadScore, SiteCheck } from "@/lib/types";
 
 export const maxDuration = 60;
@@ -77,7 +80,9 @@ export async function POST(request: Request) {
 
   // 1. Website checks, in parallel.
   const toCheck = leads.filter((l) => !checks.has(l.leadId));
-  const newChecks = await Promise.all(toCheck.map((l) => checkSite(l.website)));
+  const sampleCheck = (placeId: string) =>
+    sampleDataMode() ? DEMO_BUSINESSES.find((b) => b.lead.placeId === placeId)?.check : undefined;
+  const newChecks = await Promise.all(toCheck.map((l) => sampleCheck(l.placeId) ?? checkSite(l.website)));
   toCheck.forEach((l, i) => checks.set(l.leadId, newChecks[i]));
   if (toCheck.length) {
     await supabase.from("lead_checks").upsert(
@@ -94,37 +99,43 @@ export async function POST(request: Request) {
   }
 
   // 2. One batched scoring call for everything not yet scored for this service.
+  //    Without AI (no key, outage, bad output) fall back to rule-based scores so the list still sorts.
   const toScore = leads.filter((l) => !scores.has(l.leadId));
-  let scoringError: string | null = null;
+  let scoringNote: string | null = null;
   if (toScore.length) {
-    try {
-      const fresh = await scoreLeads(
-        service,
-        toScore.map((l) => ({ id: l.leadId, lead: l, check: checks.get(l.leadId)! })),
-      );
-      const rows = toScore.flatMap((l) => {
-        const s = fresh.get(l.leadId);
-        if (!s) return [];
-        scores.set(l.leadId, s);
-        return [{
-          lead_id: l.leadId,
-          score: s.score,
-          reason: s.reason,
-          main_gap: s.mainGap,
-          service_type: service,
-          scored_at: new Date().toISOString(),
-        }];
-      });
-      if (rows.length) await supabase.from("lead_scores").upsert(rows);
-    } catch (err) {
-      console.error(err);
-      scoringError = err instanceof AiError ? err.message : "AI scoring is unavailable right now.";
+    let fresh = new Map<string, LeadScore>();
+    if (aiConfigured()) {
+      try {
+        fresh = await scoreLeads(
+          service,
+          toScore.map((l) => ({ id: l.leadId, lead: l, check: checks.get(l.leadId)! })),
+        );
+      } catch (err) {
+        console.error(err);
+        scoringNote = "AI scoring is busy, so these are quick rule-based scores.";
+      }
     }
+    const rows = toScore.map((l) => {
+      const s = fresh.get(l.leadId) ?? ruleScore(service, l, checks.get(l.leadId)!);
+      const score = { score: s.score, reason: s.reason, mainGap: s.mainGap };
+      scores.set(l.leadId, score);
+      return {
+        lead_id: l.leadId,
+        score: score.score,
+        reason: score.reason,
+        main_gap: score.mainGap,
+        // Rule scores are not cached, so the AI gets another go next time.
+        service_type: fresh.has(l.leadId) ? service : `${service}:rules`,
+        scored_at: new Date().toISOString(),
+      };
+    });
+    const { error } = await supabase.from("lead_scores").upsert(rows);
+    if (error) console.error(error);
   }
 
   const insights: Record<string, LeadInsight> = {};
   for (const l of leads) {
     insights[l.leadId] = { check: checks.get(l.leadId)!, score: scores.get(l.leadId) ?? null };
   }
-  return NextResponse.json({ insights, scoringError });
+  return NextResponse.json({ insights, scoringError: scoringNote });
 }

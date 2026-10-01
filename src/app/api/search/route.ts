@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { MAX_RESULTS, PlacesError, searchPlaces } from "@/lib/places";
+import { MAX_RESULTS, PlacesError, searchBusinesses } from "@/lib/places";
 import { getWorkspace, totalCredits } from "@/lib/workspace";
 import type { SavedLead } from "@/lib/types";
 
@@ -42,13 +42,11 @@ export async function POST(request: Request) {
     );
   }
 
-  const location = [area, city].filter(Boolean).join(", ");
-  const query = `${category} in ${location}, Pakistan`;
-
   let found;
+  let query: string;
   try {
     // Fetch a full page even on low credits: leads already in the workspace are free.
-    found = await searchPlaces(query, Math.min(Math.max(available, 20), MAX_RESULTS));
+    ({ query, leads: found } = await searchBusinesses({ category, area, city }, Math.min(Math.max(available, 20), MAX_RESULTS)));
   } catch (err) {
     console.error(err);
     const message =

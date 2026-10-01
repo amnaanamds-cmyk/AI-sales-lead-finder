@@ -2,15 +2,18 @@
 
 import { useState } from "react";
 import { LeadPanel, ScoreBadge } from "@/components/LeadPanel";
+import type { AppApi, CardPatch } from "@/lib/api";
 import type { Plan } from "@/lib/plans";
 import { STAGES, type LeadInsight, type PipelineStage, type PitchLanguage, type SavedLead } from "@/lib/types";
-import { removeFromPipeline, updatePipeline } from "./actions";
 
 export type Card = {
   leadId: string;
   stage: PipelineStage;
   notes: string;
   nextFollowup: string | null;
+  dealValue: number | null;
+  /** How many times the business opened your report. */
+  reportViews: number;
   /** Live details from Google; null if the place no longer exists or the lookup failed. */
   lead: SavedLead | null;
   insight: LeadInsight | null;
@@ -21,17 +24,35 @@ function today() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-export function Board({ initialCards, plan, languagePref }: { initialCards: Card[]; plan: Plan; languagePref: PitchLanguage }) {
+function pkr(n: number) {
+  return `PKR ${n.toLocaleString("en-PK")}`;
+}
+
+export function Board({
+  initialCards,
+  plan,
+  languagePref,
+  serviceId,
+  api,
+  attribution = "Business data © Google",
+}: {
+  initialCards: Card[];
+  plan: Plan;
+  languagePref: PitchLanguage;
+  serviceId: string;
+  api: AppApi;
+  attribution?: string;
+}) {
   const [cards, setCards] = useState(initialCards);
   const [editing, setEditing] = useState<Card | null>(null);
   const [pitching, setPitching] = useState<Card | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function patch(leadId: string, change: Partial<Pick<Card, "stage" | "notes" | "nextFollowup">>) {
+  async function patch(leadId: string, change: CardPatch) {
     const before = cards;
     setCards((cs) => cs.map((c) => (c.leadId === leadId ? { ...c, ...change } : c)));
-    const r = await updatePipeline(leadId, change);
+    const r = await api.board.update(leadId, change);
     if (!r.ok) {
       setCards(before);
       setError(r.error);
@@ -41,13 +62,17 @@ export function Board({ initialCards, plan, languagePref }: { initialCards: Card
   async function remove(leadId: string) {
     setCards((cs) => cs.filter((c) => c.leadId !== leadId));
     setEditing(null);
-    await removeFromPipeline(leadId);
+    await api.board.remove(leadId);
   }
 
   const due = cards.filter(
     (c) => c.nextFollowup && c.nextFollowup <= today() && c.stage !== "won" && c.stage !== "lost",
   );
-  const won = cards.filter((c) => c.stage === "won").length;
+  const won = cards.filter((c) => c.stage === "won");
+  const wonValue = won.reduce((sum, c) => sum + (c.dealValue ?? 0), 0);
+  const openValue = cards
+    .filter((c) => c.stage !== "won" && c.stage !== "lost")
+    .reduce((sum, c) => sum + (c.dealValue ?? 0), 0);
 
   if (cards.length === 0) {
     return (
@@ -61,8 +86,15 @@ export function Board({ initialCards, plan, languagePref }: { initialCards: Card
     <div className="mt-4 space-y-4">
       <div className="flex flex-wrap gap-4 text-sm text-zinc-500">
         <span>{cards.length} leads</span>
-        <span className="font-medium text-emerald-700 dark:text-emerald-400">{won} won</span>
-        {due.length > 0 && <span className="font-medium text-amber-700 dark:text-amber-400">{due.length} follow-ups due</span>}
+        <span className="font-medium text-emerald-700 dark:text-emerald-400">
+          {won.length} won{wonValue > 0 && ` · ${pkr(wonValue)}`}
+        </span>
+        {openValue > 0 && <span>{pkr(openValue)} in open deals</span>}
+        {due.length > 0 && (
+          <span className="font-medium text-amber-700 dark:text-amber-400">
+            {due.length} follow-up{due.length === 1 ? "" : "s"} due
+          </span>
+        )}
       </div>
       {error && <p className="text-sm text-red-600">{error}</p>}
 
@@ -98,6 +130,12 @@ export function Board({ initialCards, plan, languagePref }: { initialCards: Card
                         <ScoreBadge score={c.insight?.score?.score} />
                       </div>
                       {c.insight?.score?.mainGap && <p className="mt-1 text-xs text-zinc-500">{c.insight.score.mainGap}</p>}
+                      {c.dealValue != null && c.dealValue > 0 && <p className="mt-1 text-xs font-medium">{pkr(c.dealValue)}</p>}
+                      {c.reportViews > 0 && (
+                        <p className="mt-1 text-xs font-medium text-emerald-700 dark:text-emerald-400">
+                          👀 Opened report {c.reportViews}×
+                        </p>
+                      )}
                       {c.nextFollowup && (
                         <p className={`mt-1 text-xs ${overdue ? "font-medium text-amber-700 dark:text-amber-400" : "text-zinc-500"}`}>
                           Follow up {c.nextFollowup}
@@ -123,7 +161,7 @@ export function Board({ initialCards, plan, languagePref }: { initialCards: Card
           );
         })}
       </div>
-      <p className="text-right text-xs text-zinc-500">Business data © Google</p>
+      <p className="text-right text-xs text-zinc-500">{attribution}</p>
 
       {editing && (
         <CardEditor
@@ -147,6 +185,9 @@ export function Board({ initialCards, plan, languagePref }: { initialCards: Card
           insight={pitching.insight}
           plan={plan}
           defaultLanguage={languagePref}
+          serviceId={serviceId}
+          api={api.lead}
+          attribution={attribution}
           onClose={() => setPitching(null)}
         />
       )}
@@ -163,13 +204,14 @@ function CardEditor({
 }: {
   card: Card;
   onClose: () => void;
-  onSave: (change: Pick<Card, "stage" | "notes" | "nextFollowup">) => Promise<void>;
+  onSave: (change: CardPatch) => Promise<void>;
   onRemove: () => void;
   onPitch: () => void;
 }) {
   const [stage, setStage] = useState(card.stage);
   const [notes, setNotes] = useState(card.notes);
   const [followup, setFollowup] = useState(card.nextFollowup ?? "");
+  const [value, setValue] = useState(card.dealValue != null ? String(card.dealValue) : "");
   const [saving, setSaving] = useState(false);
 
   return (
@@ -219,6 +261,16 @@ function CardEditor({
           />
         </label>
         <label className="block text-sm">
+          <span className="font-medium">Deal value (PKR)</span>
+          <input
+            inputMode="numeric"
+            value={value}
+            onChange={(e) => setValue(e.target.value.replace(/[^\d]/g, ""))}
+            placeholder="e.g. 45000"
+            className="mt-1 w-full rounded-lg border border-zinc-300 bg-transparent p-2 dark:border-zinc-700"
+          />
+        </label>
+        <label className="block text-sm">
           <span className="font-medium">Notes</span>
           <textarea
             value={notes}
@@ -235,7 +287,7 @@ function CardEditor({
             disabled={saving}
             onClick={async () => {
               setSaving(true);
-              await onSave({ stage, notes, nextFollowup: followup || null });
+              await onSave({ stage, notes, nextFollowup: followup || null, dealValue: value ? Number(value) : null });
             }}
             className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
           >

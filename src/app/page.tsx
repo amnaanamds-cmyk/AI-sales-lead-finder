@@ -8,6 +8,25 @@ const STEPS = [
   { title: "Close", body: "Move each lead from Contacted to Won on your pipeline board, with follow-up reminders." },
 ];
 
+const FEATURES = [
+  {
+    title: "A free report they can open",
+    body: "Cold messages from unknown numbers get ignored. Send a link to a short check-up of their website, Google reviews and social media, with your quote in PKR. They can save it as a PDF.",
+  },
+  {
+    title: "Know who's interested",
+    body: "See the moment a business opens your report. LeadNama puts them at the top of your Today list so you message them while they're thinking about it.",
+  },
+  {
+    title: "Follow-ups that actually happen",
+    body: "Most deals need a second message. Today lists who's due and who hasn't replied in 3 days, and writes a polite follow-up in their language.",
+  },
+  {
+    title: "See what's working",
+    body: "Reply rate, meetings, clients won and PKR earned, so you know your outreach is paying off.",
+  },
+];
+
 const SAMPLES = [
   {
     lang: "Roman Urdu",
@@ -55,6 +74,7 @@ export default function Home() {
           Lead<span className="text-emerald-600">Nama</span>
         </span>
         <div className="flex items-center gap-5 text-sm font-medium">
+          <Link href="/demo" className="hover:underline">Demo</Link>
           <a href="#pricing" className="hover:underline">Pricing</a>
           <Link href="/login" className="hover:underline">Sign in</Link>
         </div>
@@ -71,13 +91,21 @@ export default function Home() {
           Stop fighting for foreign gigs. LeadNama finds local businesses with no website, weak social media or few
           reviews, scores who&apos;s most likely to buy, and writes the WhatsApp pitch for you.
         </p>
-        <Link
-          href="/login"
-          className="mt-8 inline-block rounded-lg bg-emerald-600 px-6 py-3 font-medium text-white hover:bg-emerald-700"
-        >
-          Get 20 free leads every month
-        </Link>
-        <p className="mt-3 text-sm text-zinc-500">Sign in with Google. No card needed.</p>
+        <div className="mt-8 flex flex-wrap justify-center gap-3">
+          <Link
+            href="/login"
+            className="rounded-lg bg-emerald-600 px-6 py-3 font-medium text-white hover:bg-emerald-700"
+          >
+            Get 20 free leads every month
+          </Link>
+          <Link
+            href="/demo"
+            className="rounded-lg border border-zinc-300 px-6 py-3 font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"
+          >
+            Try the live demo
+          </Link>
+        </div>
+        <p className="mt-3 text-sm text-zinc-500">Sign in with Google. No card needed. The demo needs no sign-up.</p>
       </section>
 
       <section className="grid gap-4 pb-20 sm:grid-cols-2 lg:grid-cols-4">
@@ -88,6 +116,18 @@ export default function Home() {
             <p className="mt-1 text-sm text-zinc-500">{s.body}</p>
           </div>
         ))}
+      </section>
+
+      <section className="pb-20">
+        <h2 className="text-center text-2xl font-bold">Built to turn messages into clients</h2>
+        <div className="mt-8 grid gap-4 sm:grid-cols-2">
+          {FEATURES.map((f) => (
+            <div key={f.title} className="rounded-xl border border-zinc-200 p-5 dark:border-zinc-800">
+              <h3 className="font-semibold">{f.title}</h3>
+              <p className="mt-1 text-sm text-zinc-500">{f.body}</p>
+            </div>
+          ))}
+        </div>
       </section>
 
       <section className="pb-20">

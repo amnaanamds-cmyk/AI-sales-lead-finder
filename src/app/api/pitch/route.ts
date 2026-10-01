@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { AiError, writePitch } from "@/lib/ai";
+import { aiConfigured, writePitch } from "@/lib/ai";
+import { templatePitch } from "@/lib/rules";
 import { canUse } from "@/lib/plans";
 import { getWorkspace } from "@/lib/workspace";
 
@@ -92,22 +93,25 @@ export async function POST(request: Request) {
             ? "website has no HTTPS"
             : `${lead.reviewCount} Google reviews`);
 
-  let text: string;
-  try {
-    text = await writePitch({
-      serviceId: profile?.service_type ?? "web_dev",
-      senderName: profile?.name ?? null,
-      lead,
-      mainGap,
-      language,
-      tone,
-    });
-  } catch (err) {
-    console.error(err);
-    const message = err instanceof AiError ? "Couldn't write a pitch for this lead. Try another tone." : "AI is unavailable right now.";
-    return NextResponse.json({ error: message }, { status: 502 });
+  const pitchOpts = {
+    serviceId: profile?.service_type ?? "web_dev",
+    senderName: profile?.name ?? null,
+    lead,
+    language,
+    tone,
+  };
+  let text: string | null = null;
+  if (aiConfigured()) {
+    try {
+      text = await writePitch({ ...pitchOpts, mainGap });
+    } catch (err) {
+      console.error(err);
+    }
   }
+  // No AI, or it failed: a template pitch still gets the user a message to send.
+  const source = text ? "ai" : "template";
+  text ??= templatePitch({ ...pitchOpts, gap: mainGap });
 
   await supabase.from("pitches").insert({ lead_id: leadId, language, tone, text });
-  return NextResponse.json({ text });
+  return NextResponse.json({ text, source });
 }

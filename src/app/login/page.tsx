@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { supabaseConfigured } from "@/lib/config";
+import { EmailLogin } from "./EmailLogin";
 import { GoogleButton } from "./GoogleButton";
 
 export default async function LoginPage({ searchParams }: PageProps<"/login">) {
@@ -20,7 +22,27 @@ export default async function LoginPage({ searchParams }: PageProps<"/login">) {
           Sign-in failed. Please try again.
         </p>
       )}
-      <GoogleButton next={typeof next === "string" ? next : undefined} />
+      {supabaseConfigured() ? (
+        <>
+          <GoogleButton next={typeof next === "string" ? next : undefined} />
+          <div className="flex items-center gap-3 text-xs text-zinc-400">
+            <span className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
+            or
+            <span className="h-px flex-1 bg-zinc-200 dark:bg-zinc-800" />
+          </div>
+          <EmailLogin next={typeof next === "string" ? next : undefined} />
+        </>
+      ) : (
+        <p className="rounded-md bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+          Sign-in isn&apos;t set up on this server yet (Supabase keys missing). See the README to connect it.
+        </p>
+      )}
+      <Link
+        href="/demo"
+        className="text-center text-sm font-medium text-emerald-700 hover:underline dark:text-emerald-400"
+      >
+        Or try the live demo, no sign-up needed →
+      </Link>
     </main>
   );
 }

@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { addToPipeline } from "@/app/pipeline/actions";
+import { ReportEditor } from "@/components/ReportEditor";
+import type { LeadApi, SavedPitch } from "@/lib/api";
 import { whatsappUrl } from "@/lib/phone";
 import { canUse, type Plan } from "@/lib/plans";
 import {
@@ -61,19 +62,23 @@ export function GapChips({ check, lead }: { check: SiteCheck; lead: SavedLead })
   );
 }
 
-type SavedPitch = { language: PitchLanguage; tone: PitchTone; text: string };
-
 export function LeadPanel({
   lead,
   insight,
   plan,
   defaultLanguage,
+  serviceId,
+  api,
+  attribution = "Business data © Google",
   onClose,
 }: {
   lead: SavedLead;
   insight: LeadInsight | null;
   plan: Plan;
   defaultLanguage: PitchLanguage;
+  serviceId: string;
+  api: LeadApi;
+  attribution?: string;
   onClose: () => void;
 }) {
   const allLanguages = canUse(plan, "allLanguages");
@@ -89,6 +94,25 @@ export function LeadPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [editingReport, setEditingReport] = useState(false);
+  const [reportUrl, setReportUrl] = useState<string | null>(null);
+  const [reportViews, setReportViews] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .existingReport(lead)
+      .then((r) => {
+        if (!cancelled && r) {
+          setReportUrl(r.url);
+          setReportViews(r.views);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [api, lead]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -101,22 +125,16 @@ export function LeadPanel({
       setBusy(true);
       setError(null);
       try {
-        const res = await fetch("/api/pitch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ leadId: lead.leadId, language: lang, tone: t, lead }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error ?? "Couldn't write a pitch.");
-        setDrafts((d) => ({ ...d, [`${lang}:${t}`]: data.text }));
-        setSaved((prev) => [{ language: lang, tone: t, text: data.text }, ...(prev ?? [])]);
+        const pitch = await api.writePitch(lead, lang, t);
+        setDrafts((d) => ({ ...d, [`${lang}:${t}`]: pitch }));
+        setSaved((prev) => [{ language: lang, tone: t, text: pitch }, ...(prev ?? [])]);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Couldn't write a pitch.");
       } finally {
         setBusy(false);
       }
     },
-    [lead],
+    [lead, api],
   );
 
   const hasSaved = (list: SavedPitch[], lang: PitchLanguage, t: PitchTone) =>
@@ -133,11 +151,10 @@ export function LeadPanel({
   // Load saved pitches once.
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/pitch?leadId=${lead.leadId}`)
-      .then((r) => r.json())
-      .then((d) => {
+    api
+      .loadPitches(lead)
+      .then((list) => {
         if (cancelled) return;
-        const list: SavedPitch[] = d.pitches ?? [];
         setSaved(list);
         if (!hasSaved(list, initial.language, initial.tone)) void generate(initial.language, initial.tone);
       })
@@ -162,7 +179,7 @@ export function LeadPanel({
       if (stage === "new") setNotice("The pipeline board is on the Freelancer plan and above.");
       return;
     }
-    const r = await addToPipeline(lead.leadId, stage);
+    const r = await api.track(lead.leadId, stage);
     setNotice(r.ok ? (stage === "new" ? "Added to your pipeline." : "Moved to Contacted in your pipeline.") : r.error);
   }
 
@@ -316,8 +333,70 @@ export function LeadPanel({
           {notice && <p className="text-sm text-emerald-700 dark:text-emerald-400">{notice}</p>}
         </section>
 
-        <p className="mt-auto pt-6 text-right text-xs text-zinc-500">Business data © Google</p>
+        <section className="mt-5 rounded-lg border border-dashed border-emerald-600/50 p-3">
+          <h3 className="font-medium">Free report for this business</h3>
+          <p className="mt-1 text-sm text-zinc-500">
+            A cold message from an unknown number is easy to ignore. Send a link to a short check-up of their online
+            presence, with an optional quote in PKR. You&apos;ll see when they open it.
+          </p>
+          {reportUrl ? (
+            <div className="mt-2 space-y-2">
+              {reportViews > 0 && (
+                <p className="text-sm font-medium text-emerald-700 dark:text-emerald-400">
+                  👀 Opened {reportViews} time{reportViews === 1 ? "" : "s"}. Good moment to follow up.
+                </p>
+              )}
+              <a href={reportUrl} target="_blank" rel="noopener noreferrer" className="block break-all text-sm text-emerald-700 hover:underline dark:text-emerald-400">
+                {reportUrl}
+              </a>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => {
+                    if (!text.includes(reportUrl)) setText(`${text.trim()}\n\n${reportUrl}`);
+                    setNotice("Report link added to your message.");
+                  }}
+                  className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700"
+                >
+                  Add link to message
+                </button>
+                <button
+                  onClick={async () => {
+                    await navigator.clipboard.writeText(reportUrl).catch(() => {});
+                    setNotice("Report link copied.");
+                  }}
+                  className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"
+                >
+                  Copy link
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setEditingReport(true)}
+              disabled={!insight}
+              className="mt-2 rounded-lg border border-emerald-600 px-3 py-1.5 text-sm font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-400 dark:hover:bg-emerald-950"
+            >
+              {insight ? "Create report link" : "Waiting for website check…"}
+            </button>
+          )}
+        </section>
+
+        <p className="mt-auto pt-6 text-right text-xs text-zinc-500">{attribution}</p>
       </aside>
+      {editingReport && insight && (
+        <ReportEditor
+          lead={lead}
+          check={insight.check}
+          serviceId={serviceId}
+          onCancel={() => setEditingReport(false)}
+          onCreate={async (draft) => {
+            const url = await api.createReport(lead, draft);
+            setReportUrl(url);
+            setEditingReport(false);
+            setNotice("Report ready. Add the link to your message.");
+          }}
+        />
+      )}
     </div>
   );
 }

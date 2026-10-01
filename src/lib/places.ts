@@ -1,4 +1,6 @@
 import "server-only";
+import { DEMO_BUSINESSES, searchDemo } from "@/app/demo/data";
+import { sampleDataMode } from "@/lib/config";
 import type { Lead } from "@/lib/types";
 
 type PlaceResult = {
@@ -52,6 +54,19 @@ const FIELD_MASK = [
 
 export class PlacesError extends Error {}
 
+/** Find businesses by type and location: Google Places, or the sample data in sample-data mode. */
+export async function searchBusinesses(
+  q: { category: string; area: string; city: string },
+  limit: number,
+): Promise<{ query: string; leads: Lead[] }> {
+  const location = [q.area, q.city].filter(Boolean).join(", ");
+  const query = `${q.category} in ${location}, Pakistan`;
+  if (sampleDataMode()) {
+    return { query: `${query} (sample data)`, leads: searchDemo(q.category, q.area, q.city).slice(0, limit).map((b) => b.lead) };
+  }
+  return { query, leads: await searchPlaces(query, limit) };
+}
+
 /** Search Google Places for businesses in Pakistan, up to `limit` results. */
 export async function searchPlaces(textQuery: string, limit: number): Promise<Lead[]> {
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
@@ -101,6 +116,7 @@ const DETAILS_FIELD_MASK = FIELD_MASK.split(",")
 
 /** Fetch one place's current details by id (Place Details, New). Returns null if it's gone. */
 export async function getPlaceDetails(placeId: string): Promise<Lead | null> {
+  if (sampleDataMode()) return DEMO_BUSINESSES.find((b) => b.lead.placeId === placeId)?.lead ?? null;
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   if (!apiKey) throw new PlacesError("GOOGLE_PLACES_API_KEY is not set");
 

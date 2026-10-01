@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { canUse } from "@/lib/plans";
 import { getWorkspace } from "@/lib/workspace";
+import type { CardPatch } from "@/lib/api";
 import { STAGES, type PipelineStage } from "@/lib/types";
 
 type Result = { ok: true } | { ok: false; error: string };
@@ -44,7 +45,7 @@ export async function addToPipeline(leadId: string, stage: PipelineStage = "new"
 
 export async function updatePipeline(
   leadId: string,
-  patch: { stage?: PipelineStage; notes?: string; nextFollowup?: string | null },
+  patch: CardPatch,
 ): Promise<Result> {
   const auth = await authorised();
   if (!("supabase" in auth)) return auth;
@@ -60,6 +61,12 @@ export async function updatePipeline(
       return { ok: false, error: "Invalid date." };
     }
     row.next_followup = patch.nextFollowup || null;
+  }
+  if (patch.dealValue !== undefined) {
+    if (patch.dealValue !== null && !(Number.isInteger(patch.dealValue) && patch.dealValue >= 0 && patch.dealValue < 1e9)) {
+      return { ok: false, error: "Invalid deal value." };
+    }
+    row.deal_value = patch.dealValue;
   }
 
   const { error } = await auth.supabase.from("pipeline").update(row).eq("lead_id", leadId);

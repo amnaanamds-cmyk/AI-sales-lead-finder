@@ -1,4 +1,6 @@
+import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import { REF_COOKIE } from "@/lib/supabase/proxy";
 import { createClient } from "@/lib/supabase/server";
 
 /** Google OAuth lands here with a `code` to exchange for a session. */
@@ -21,8 +23,14 @@ export async function GET(request: Request) {
         .select("service_type")
         .eq("id", user!.id)
         .single();
+      // New account from an invite link: credit the referrer (the database checks it's fresh and not self).
+      const jar = await cookies();
+      const ref = jar.get(REF_COOKIE)?.value;
+      if (ref && !profile?.service_type) await supabase.rpc("claim_referral", { code: ref });
       const dest = profile?.service_type ? safeNext : "/onboarding";
-      return NextResponse.redirect(`${origin}${dest}`);
+      const response = NextResponse.redirect(`${origin}${dest}`);
+      if (ref) response.cookies.delete(REF_COOKIE);
+      return response;
     }
   }
 

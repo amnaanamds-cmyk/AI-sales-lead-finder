@@ -1,14 +1,14 @@
 "use client";
 
 import { useRef, useState } from "react";
-import Link from "next/link";
 import { GapChips, LeadPanel, ScoreBadge } from "@/components/LeadPanel";
+import type { AppApi, SearchResult } from "@/lib/api";
 import { toCsv } from "@/lib/csv";
 import { canUse, type Plan } from "@/lib/plans";
 import type { LeadInsight, PitchLanguage, SavedLead } from "@/lib/types";
 
-type Result = { query: string; leads: SavedLead[]; newLeads: number; skipped: number };
-type RecentSearch = { id: string; query: string; city: string; result_count: number; created_at: string };
+type Result = Omit<SearchResult, "creditsLeft">;
+export type RecentSearch = { id: string; query: string; city: string; result_count: number; created_at: string };
 
 const BATCH = 10;
 
@@ -17,11 +17,25 @@ export function LeadSearch({
   plan,
   languagePref,
   recent,
+  serviceId,
+  api,
+  billingHref = "/billing",
+  attribution = "Business data © Google",
+  examples = [],
+  allowDownloads = true,
 }: {
   initialCredits: number;
   plan: Plan;
   languagePref: PitchLanguage;
   recent: RecentSearch[];
+  serviceId: string;
+  api: AppApi;
+  billingHref?: string;
+  attribution?: string;
+  /** Example searches shown as one-tap chips (used by the demo). */
+  examples?: { category: string; area?: string; city: string }[];
+  /** False inside viewers that block file downloads. */
+  allowDownloads?: boolean;
 }) {
   const [credits, setCredits] = useState(initialCredits);
   const [loading, setLoading] = useState(false);
@@ -45,21 +59,12 @@ export function LeadSearch({
       while (next < batches.length && run === runId.current) {
         const batch = batches[next++];
         try {
-          const res = await fetch("/api/analyze", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ leads: batch }),
-          });
-          const data = await res.json();
+          const data = await api.search.analyze(batch);
           if (run !== runId.current) return;
-          if (res.ok) {
-            setInsights((prev) => ({ ...prev, ...data.insights }));
-            if (data.scoringError) setScoringError(data.scoringError);
-          } else {
-            setScoringError(data.error ?? "Analysis failed.");
-          }
-        } catch {
-          setScoringError("Analysis failed. Check your connection.");
+          setInsights((prev) => ({ ...prev, ...data.insights }));
+          if (data.scoringError) setScoringError(data.scoringError);
+        } catch (err) {
+          setScoringError(err instanceof Error ? err.message : "Analysis failed. Check your connection.");
         } finally {
           if (run === runId.current) setAnalyzing((n) => n - 1);
         }
@@ -71,19 +76,21 @@ export function LeadSearch({
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const form = new FormData(e.currentTarget);
+    await runSearch({
+      category: String(form.get("category") ?? ""),
+      area: String(form.get("area") ?? ""),
+      city: String(form.get("city") ?? ""),
+    });
+  }
+
+  async function runSearch(params: { category: string; area: string; city: string }) {
     const run = ++runId.current;
     setLoading(true);
     setError(null);
     setScoringError(null);
     setInsights({});
     try {
-      const res = await fetch("/api/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(Object.fromEntries(form)),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Search failed.");
+      const data = await api.search.search(params);
       setResult(data);
       setCredits(data.creditsLeft);
       void analyze(data.leads, run);
@@ -94,13 +101,17 @@ export function LeadSearch({
     }
   }
 
-  function fillForm(s: RecentSearch) {
+  function fillForm(category: string, area: string, city: string) {
     const form = formRef.current;
     if (!form) return;
+    (form.elements.namedItem("category") as HTMLInputElement).value = category;
+    (form.elements.namedItem("area") as HTMLInputElement).value = area;
+    (form.elements.namedItem("city") as HTMLInputElement).value = city;
+  }
+
+  function fillRecent(s: RecentSearch) {
     const [category, area] = s.query.split(", ");
-    (form.elements.namedItem("category") as HTMLInputElement).value = category ?? "";
-    (form.elements.namedItem("area") as HTMLInputElement).value = area ?? "";
-    (form.elements.namedItem("city") as HTMLInputElement).value = s.city;
+    fillForm(category ?? "", area ?? "", s.city);
   }
 
   const sorted = result
@@ -154,9 +165,9 @@ export function LeadSearch({
         <p className="text-sm text-zinc-500">
           <span className="font-semibold text-zinc-900 dark:text-zinc-100">{credits}</span> lead credits left ·{" "}
           <span className="capitalize">{plan}</span> plan ·{" "}
-          <Link href="/billing" className="text-emerald-700 hover:underline dark:text-emerald-400">
+          <a href={billingHref} className="text-emerald-700 hover:underline dark:text-emerald-400">
             Get more
-          </Link>
+          </a>
         </p>
       </div>
 
@@ -182,7 +193,7 @@ export function LeadSearch({
           {recent.map((s) => (
             <button
               key={s.id}
-              onClick={() => fillForm(s)}
+              onClick={() => fillRecent(s)}
               className="mr-2 mt-1 rounded-full border border-zinc-300 px-2.5 py-0.5 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"
             >
               {s.query}, {s.city} <span className="text-zinc-400">({s.result_count})</span>
@@ -191,12 +202,31 @@ export function LeadSearch({
         </div>
       )}
 
+      {examples.length > 0 && !result && (
+        <div className="text-sm">
+          <span className="text-zinc-500">Try: </span>
+          {examples.map((x) => (
+            <button
+              key={`${x.category}|${x.area}|${x.city}`}
+              onClick={() => {
+                fillForm(x.category, x.area ?? "", x.city);
+                void runSearch({ category: x.category, area: x.area ?? "", city: x.city });
+              }}
+              className="mr-2 mt-1 rounded-full border border-emerald-600/60 px-2.5 py-0.5 text-emerald-800 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-950"
+            >
+              {x.category} in {x.area ? `${x.area}, ` : ""}
+              {x.city}
+            </button>
+          ))}
+        </div>
+      )}
+
       {credits <= 0 && (
         <p className="text-sm text-amber-700 dark:text-amber-400">
           You&apos;ve used all your lead credits.{" "}
-          <Link href="/billing" className="underline">
+          <a href={billingHref} className="underline">
             Buy a pack or upgrade
-          </Link>
+          </a>
           .
         </p>
       )}
@@ -212,14 +242,14 @@ export function LeadSearch({
               {result.skipped > 0 && ` · ${result.skipped} more hidden (out of credits)`}
               {analyzing > 0 && " · checking websites and scoring…"}
             </p>
-            <button
+            {allowDownloads && <button
               onClick={exportCsv}
               disabled={result.leads.length === 0 || !canExport}
               title={canExport ? undefined : "CSV export is on the Agency plan"}
               className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
             >
               Export CSV{!canExport && " 🔒"}
-            </button>
+            </button>}
           </div>
           {scoringError && <p className="text-sm text-amber-700 dark:text-amber-400">{scoringError}</p>}
 
@@ -270,7 +300,7 @@ export function LeadSearch({
             </table>
           </div>
           {/* Attribution required by the Google Maps Platform terms. */}
-          <p className="text-right text-xs text-zinc-500">Business data © Google</p>
+          <p className="text-right text-xs text-zinc-500">{attribution}</p>
         </section>
       )}
 
@@ -281,6 +311,9 @@ export function LeadSearch({
           insight={insights[open.leadId] ?? null}
           plan={plan}
           defaultLanguage={languagePref}
+          serviceId={serviceId}
+          api={api.lead}
+          attribution={attribution}
           onClose={() => setOpen(null)}
         />
       )}

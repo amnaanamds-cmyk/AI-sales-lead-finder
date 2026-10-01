@@ -1,10 +1,11 @@
 import Link from "next/link";
 
 const NAV = [
+  { href: "/today", label: "Today" },
   { href: "/search", label: "Search" },
   { href: "/pipeline", label: "Pipeline" },
   { href: "/billing", label: "Billing" },
-  { href: "/onboarding", label: "Settings" },
+  { href: "/settings", label: "Settings" },
 ];
 
 export function AppHeader({ name, active }: { name: string; active: string }) {
@@ -15,7 +16,7 @@ export function AppHeader({ name, active }: { name: string; active: string }) {
           <Link href="/search" className="text-lg font-bold">
             Lead<span className="text-emerald-600">Nama</span>
           </Link>
-          <nav className="flex gap-4 text-sm">
+          <nav className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
             {NAV.map((n) => (
               <Link
                 key={n.href}

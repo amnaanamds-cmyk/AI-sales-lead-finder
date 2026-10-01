@@ -1,9 +1,10 @@
 import { redirect } from "next/navigation";
 import { AppHeader } from "@/components/AppHeader";
+import { dataAttribution } from "@/lib/config";
 import { createClient } from "@/lib/supabase/server";
 import { getWorkspace, totalCredits } from "@/lib/workspace";
 import type { PitchLanguage } from "@/lib/types";
-import { LeadSearch } from "./LeadSearch";
+import { SearchClient } from "./SearchClient";
 
 export default async function SearchPage() {
   const supabase = await createClient();
@@ -38,11 +39,13 @@ export default async function SearchPage() {
     <div className="flex flex-1 flex-col">
       <AppHeader name={profile.name ?? user.email ?? ""} active="/search" />
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8">
-        <LeadSearch
+        <SearchClient
           initialCredits={workspace ? totalCredits(workspace) : 0}
           plan={workspace?.plan ?? "free"}
           languagePref={(profile.language_pref as PitchLanguage) ?? "en"}
           recent={uniqueRecent}
+          serviceId={profile.service_type}
+          attribution={dataAttribution()}
         />
       </main>
     </div>

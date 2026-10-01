@@ -19,6 +19,11 @@ function anthropic() {
 
 export class AiError extends Error {}
 
+/** Without a key the app falls back to rule-based scores and template pitches (src/lib/rules.ts). */
+export function aiConfigured() {
+  return Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
+}
+
 const ScoreSchema = z.object({
   results: z.array(
     z.object({
@@ -151,5 +156,53 @@ export async function writePitch(opts: {
     .join("")
     .trim();
   if (!text) throw new AiError(`empty pitch (stop_reason: ${response.stop_reason})`);
+  return text;
+}
+
+/** A short follow-up for a lead that hasn't replied, building on what was sent before. */
+export async function writeFollowUp(opts: {
+  serviceId: string;
+  senderName: string | null;
+  lead: Lead;
+  previousMessage: string | null;
+  days: number;
+  reportUrl: string | null;
+  reportViews: number;
+  language: PitchLanguage;
+}): Promise<string> {
+  const service = getService(opts.serviceId);
+  const response = await anthropic().beta.messages.create({
+    model: PITCH_MODEL,
+    max_tokens: 2000,
+    output_config: { effort: "low" },
+    betas: ["server-side-fallback-2026-07-01"],
+    fallbacks: "default",
+    system:
+      "You write short, polite WhatsApp follow-ups for Pakistani freelancers whose first message to a local business " +
+      "got no reply. Rules: at most 45 words. Don't repeat the first message or guilt-trip. Add one new, useful angle " +
+      "(a free tip, a tiny offer, or a pointer to the report link if given). End with an easy yes/no question. " +
+      "No fake claims, no prices, no hashtags. If a link is given, include it exactly once. Output only the message.",
+    messages: [
+      {
+        role: "user",
+        content: [
+          `Sender: ${opts.senderName ?? "a local freelancer"}, a ${service.noun}.`,
+          `Business: ${opts.lead.name}${opts.lead.category ? ` (${opts.lead.category})` : ""}.`,
+          `First message, sent ${opts.days} day(s) ago: ${opts.previousMessage ?? "(not saved)"}`,
+          opts.reportUrl
+            ? `Free report link: ${opts.reportUrl}${opts.reportViews > 0 ? ` (they have opened it ${opts.reportViews} time(s), so they are interested)` : ""}`
+            : "No report link.",
+          LANGUAGE_RULES[opts.language],
+          TONE_RULES.friendly,
+        ].join("\n"),
+      },
+    ],
+  });
+  if (response.stop_reason === "refusal") throw new AiError("follow-up request was declined");
+  const text = response.content
+    .flatMap((b) => (b.type === "text" ? [b.text] : []))
+    .join("")
+    .trim();
+  if (!text) throw new AiError(`empty follow-up (stop_reason: ${response.stop_reason})`);
   return text;
 }
